@@ -698,6 +698,39 @@ Consider changing HasDefault.default_method or making these attributes part of H
     assert second == expected_second
 
 
+def test_typed_attributes():
+    class AttrBase(Interface):
+        name: "foo"
+
+    class AttrImpl:
+        name = 'foo'
+
+    assert AttrImpl()
+
+
+def test_require_typed_attributes():
+    class AttrBase(Interface):
+        name: str
+        id: int
+
+    with pytest.raises(InvalidImplementation) as e:
+        class AttrImpl(implements(AttrBase)):
+            pass
+
+    expected = dedent(
+        """
+        class AttrImpl failed to implement interface AttrBase:
+
+        The following attributes of AttrBase were not defined:
+          - name: str
+          - id: int"""
+    )
+
+    assert expected == str(e.value)
+
+
+
+
 def test_wrapped_implementation():
     class I(Interface):  # pragma: nocover
         def f(self, a, b, c):

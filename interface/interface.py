@@ -27,11 +27,56 @@ CLASS_ATTRIBUTE_WHITELIST = frozenset([
     '__name__',
     '__qualname__',
     '__weakref__',
-])
+    '__annotations__',
+    '_annotations',
+    '_attr_defaults'
+    ])
 
 is_interface_field_name = complement(CLASS_ATTRIBUTE_WHITELIST.__contains__)
 
 TRIVIAL_CLASS_ATTRIBUTES = frozenset(dir(type('_', (object,), {})))
+
+
+def get_attributes(cls):
+    """Gets all attributes from a class."""
+    annotations = cls.__annotations__
+    defaults = {
+        x: getattr(cls, x) for x in dir(cls)
+        if '__' not in x
+           and not callable(getattr(cls, x))
+        }
+
+    return annotations, defaults
+
+
+def update_clsdict_with_attr_info(clsd: dict) -> dict:
+    """Updates the clsdict of a metaclass with attribute information."""
+    annotation_key = '__annotations__'
+    attr_defaults = {}
+
+    # Note and remove annotations from class dict
+    if annotation_key in clsd:
+        attr_annots = clsd[annotation_key]
+        del clsd['__annotations__']
+    else:
+        attr_annots = dict()
+
+    for name, value in keyfilter(is_interface_field_name, clsd).items():
+        if callable(name):
+            continue
+
+        # Use type from annotations, if available
+        if name in attr_annots:
+            vtype = attr_annots[name]
+        else:
+            vtype = type(value)
+
+        attr_defaults[name] = (vtype, value)
+
+    clsd['_annotations'] = attr_annots
+    clsd['_attr_defaults'] = attr_defaults
+
+    return clsd
 
 
 def static_get_type_attr(t, name):
@@ -63,17 +108,17 @@ def _conflicting_defaults(typename, conflicts):
     """
     message = "\nclass {C} received conflicting default implementations:".format(
         C=typename,
-    )
+        )
     for attrname, interfaces in conflicts.items():
         message += dedent(
             """
 
             The following interfaces provided default implementations for {attr!r}:
             {interfaces}"""
-        ).format(
+            ).format(
             attr=attrname,
             interfaces=bulleted_list(sorted(map(getname, interfaces))),
-        )
+            )
     return InvalidImplementation(message)
 
 
@@ -83,11 +128,19 @@ class InterfaceMeta(type):
 
     Supplies a ``_signatures`` attribute.
     """
+
     def __new__(mcls, name, bases, clsdict):
         signatures = {}
         defaults = {}
+
+        clsdict = update_clsdict_with_attr_info(clsdict)
+
+        keys_traversed = set()
         for k, v in keyfilter(is_interface_field_name, clsdict).items():
             try:
+                # Skip any non-callables, obviously
+                if not callable(v):
+                    continue
                 signatures[k] = TypedSignature(v)
             except TypeError as e:
                 errmsg = (
@@ -96,22 +149,40 @@ class InterfaceMeta(type):
                         iface_name=name,
                         fieldname=k,
                         attrtype=getname(type(v)),
-                    )
+                        )
                 )
                 raise_from(TypeError(errmsg), e)
 
             if isinstance(v, default):
                 defaults[k] = v
 
+            keys_traversed.add(k)
+
         warn_if_defaults_use_non_interface_members(
             name,
             defaults,
             set(signatures.keys())
-        )
+            )
 
         clsdict['_signatures'] = signatures
         clsdict['_defaults'] = defaults
         return super(InterfaceMeta, mcls).__new__(mcls, name, bases, clsdict)
+
+    def _diff_attrs(self, type_):
+        """
+        Diff our attrs against the attrs provided by type_.
+        """
+        missing = list()
+        mistyped = dict()
+
+        # Guaranteed unique type
+        class Sentinel:
+            pass
+
+        
+
+        print(f"MISSING: {missing}\nMISTYPED:{mistyped}")
+
 
     def _diff_signatures(self, type_):
         """
@@ -170,8 +241,8 @@ class InterfaceMeta(type):
         -------
         None
         """
+        self._diff_attrs(type_)
         raw_missing, mistyped, mismatched = self._diff_signatures(type_)
-
         # See if we have defaults for missing methods.
         missing = []
         defaults_to_use = {}
@@ -195,17 +266,17 @@ class InterfaceMeta(type):
         message = "\nclass {C} failed to implement interface {I}:".format(
             C=getname(t),
             I=getname(self),
-        )
+            )
         if missing:
             message += dedent(
                 """
 
                 The following methods of {I} were not implemented:
                 {missing_methods}"""
-            ).format(
+                ).format(
                 I=getname(self),
                 missing_methods=self._format_missing_methods(missing)
-            )
+                )
 
         if mistyped:
             message += dedent(
@@ -213,10 +284,10 @@ class InterfaceMeta(type):
 
                 The following methods of {I} were implemented with incorrect types:
                 {mismatched_types}"""
-            ).format(
+                ).format(
                 I=getname(self),
                 mismatched_types=self._format_mismatched_types(mistyped),
-            )
+                )
 
         if mismatched:
             message += dedent(
@@ -224,17 +295,17 @@ class InterfaceMeta(type):
 
                 The following methods of {I} were implemented with invalid signatures:
                 {mismatched_methods}"""
-            ).format(
+                ).format(
                 I=getname(self),
                 mismatched_methods=self._format_mismatched_methods(mismatched),
-            )
+                )
         return InvalidImplementation(message)
 
     def _format_missing_methods(self, missing):
         return "\n".join(sorted([
             "  - {name}{sig}".format(name=name, sig=self._signatures[name])
             for name in missing
-        ]))
+            ]))
 
     def _format_mismatched_types(self, mistyped):
         return "\n".join(sorted([
@@ -243,9 +314,9 @@ class InterfaceMeta(type):
                 name=name,
                 actual=getname(bad_type),
                 expected=getname(self._signatures[name].type),
-            )
+                )
             for name, bad_type in mistyped.items()
-        ]))
+            ]))
 
     def _format_mismatched_methods(self, mismatched):
         return "\n".join(sorted([
@@ -253,9 +324,9 @@ class InterfaceMeta(type):
                 name=name,
                 actual=bad_sig,
                 expected=self._signatures[name],
-            )
+                )
             for name, bad_sig in mismatched.items()
-        ]))
+            ]))
 
 
 class Interface(with_metaclass(InterfaceMeta)):
@@ -312,6 +383,7 @@ class Interface(with_metaclass(InterfaceMeta)):
     --------
     :func:`implements`
     """
+
     def __new__(cls, *args, **kwargs):
         raise TypeError("Can't instantiate interface %s" % getname(cls))
 
@@ -345,7 +417,7 @@ class Interface(with_metaclass(InterfaceMeta)):
             name,
             (Interface,),
             {name: static_get_type_attr(existing_class, name) for name in subset},
-        )
+            )
 
 
 empty_set = frozenset([])
@@ -355,6 +427,7 @@ class ImplementsMeta(type):
     """
     Metaclass for implementations of particular interfaces.
     """
+
     def __new__(mcls, name, bases, clsdict, interfaces=empty_set):
         assert isinstance(interfaces, frozenset)
 
@@ -415,9 +488,9 @@ def format_iface_method_docs(I):
             iface_name=iface_name,
             method_name=method_name,
             sig=sig,
-        )
+            )
         for method_name, sig in sorted(list(I._signatures.items()), key=first)
-    ])
+        ])
 
 
 def _make_implements():
@@ -490,7 +563,7 @@ def _make_implements():
             if not issubclass(I, Interface):
                 raise TypeError(
                     "implements() expected an Interface, but got %s." % I
-                )
+                    )
 
         ordered_ifaces = tuple(sorted(interfaces, key=getname))
         iface_names = list(map(getname, ordered_ifaces))
@@ -503,17 +576,17 @@ def _make_implements():
             Methods
             -------
             {methods}"""
-        ).format(
+            ).format(
             interfaces=', '.join(iface_names),
             methods="\n".join(map(format_iface_method_docs, ordered_ifaces)),
-        )
+            )
 
         result = ImplementsMeta(
             name,
             (object,),
             {'__doc__': doc},
             interfaces=interfaces,
-        )
+            )
 
         # NOTE: It's important for correct weak-memoization that this is set is
         # stored somewhere on the resulting type.
@@ -521,6 +594,7 @@ def _make_implements():
 
         _memo[interfaces] = result
         return result
+
     return implements
 
 
